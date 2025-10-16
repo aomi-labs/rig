@@ -11,7 +11,7 @@
 
 use std::{collections::HashMap, pin::Pin};
 
-use futures::Future;
+use futures::{Future, channel::oneshot};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -93,7 +93,7 @@ pub trait Tool: Sized + Send + Sync {
     /// The arguments type of the tool.
     type Args: for<'a> Deserialize<'a> + Send + Sync;
     /// The output type of the tool.
-    type Output: Serialize;
+    type Output: Serialize + Send;
 
     /// A method returning the name of the tool.
     fn name(&self) -> String {
@@ -111,6 +111,19 @@ pub trait Tool: Sized + Send + Sync {
         &self,
         args: Self::Args,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + Sync;
+
+    /// Convenience method that returns a oneshot receiver once awaited.
+    fn call_async(
+        &self,
+        args: Self::Args,
+    ) -> impl Future<Output = oneshot::Receiver<Result<Self::Output, Self::Error>>> + Send {
+        async move {
+            let (tx, rx) = oneshot::channel();
+            let result = <Self as Tool>::call(self, args).await;
+            let _ = tx.send(result);
+            rx
+        }
+    }
 }
 
 /// Trait that represents an LLM tool that can be stored in a vector store and RAGged
@@ -153,6 +166,11 @@ pub trait ToolDyn: Send + Sync {
         &self,
         args: String,
     ) -> Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + Sync + '_>>;
+
+    fn call_async(
+        &self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = oneshot::Receiver<Result<String, ToolError>>> + Send + '_>>;
 }
 
 impl<T: Tool> ToolDyn for T {
@@ -181,6 +199,31 @@ impl<T: Tool> ToolDyn for T {
                     }),
                 Err(e) => Err(ToolError::JsonError(e)),
             }
+        })
+    }
+
+    fn call_async(
+        &self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = oneshot::Receiver<Result<String, ToolError>>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let (tx, rx) = oneshot::channel();
+            let send_result = match serde_json::from_str(&args) {
+                Ok(args) => {
+                    let fut = <Self as Tool>::call_async(self, args);
+                    match fut.await.await {
+                        Ok(Ok(output)) => {
+                            serde_json::to_string(&output).map_err(ToolError::JsonError)
+                        }
+                        Ok(Err(tool_err)) => Err(ToolError::ToolCallError(Box::new(tool_err))),
+                        Err(e) => Err(ToolError::ToolCallError(Box::new(e))),
+                    }
+                }
+                Err(e) => Err(ToolError::JsonError(e)),
+            };
+            let _ = tx.send(send_result);
+            rx
         })
     }
 }
@@ -324,6 +367,20 @@ where
                 .join(""))
         })
     }
+
+    fn call_async(
+        &self,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = oneshot::Receiver<Result<String, ToolError>>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let (tx, rx) = oneshot::channel();
+            let mut call_future = <Self as ToolDyn>::call(self, args);
+            let result = call_future.await;
+            let _ = tx.send(result);
+            rx
+        })
+    }
 }
 
 /// Wrapper trait to allow for dynamic dispatch of raggable tools
@@ -436,6 +493,37 @@ impl ToolSet {
             Ok(tool.call(args).await?)
         } else {
             Err(ToolSetError::ToolNotFoundError(toolname.to_string()))
+        }
+    }
+
+    /// Return a future that yields a oneshot receiver mirroring [`ToolSet::call`]'s result.
+    pub fn call_async(
+        &self,
+        toolname: &str,
+        args: String,
+    ) -> Pin<Box<dyn Future<Output = oneshot::Receiver<Result<String, ToolSetError>>> + Send + '_>>
+    {
+        if let Some(tool) = self.tools.get(toolname) {
+            let toolname_owned = toolname.to_string();
+            let log_args = serde_json::to_string_pretty(&args).unwrap_or_else(|_| args.clone());
+            let call_future = tool.call(args);
+            Box::pin(async move {
+                tracing::info!(
+                    target: "rig",
+                    "Calling tool {toolname_owned} with args:\n{log_args}"
+                );
+                let (tx, rx) = oneshot::channel();
+                let result = call_future.await.map_err(Into::into);
+                let _ = tx.send(result);
+                rx
+            })
+        } else {
+            let missing = toolname.to_string();
+            Box::pin(async move {
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(Err(ToolSetError::ToolNotFoundError(missing)));
+                rx
+            })
         }
     }
 
