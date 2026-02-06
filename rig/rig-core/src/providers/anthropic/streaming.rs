@@ -214,6 +214,7 @@ where
                             name: tool.name,
                             description: Some(tool.description),
                             input_schema: tool.parameters,
+                            cache_control: None,
                         })
                         .collect::<Vec<_>>(),
                     "tool_choice": ToolChoice::Auto,

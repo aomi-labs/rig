@@ -127,21 +127,78 @@ impl GetTokenUsage for Usage {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// Tool definition for Anthropic function calling with optional cache control.
+///
+/// Tools can be cached to reduce costs when using the same tool definitions
+/// across multiple requests.
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+    /// Optional cache control for caching this tool definition
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
-/// Cache control directive for Anthropic prompt caching
+impl ToolDefinition {
+    /// Create a new tool definition
+    pub fn new(name: impl Into<String>, description: impl Into<String>, input_schema: serde_json::Value) -> Self {
+        Self {
+            name: name.into(),
+            description: Some(description.into()),
+            input_schema,
+            cache_control: None,
+        }
+    }
+
+    /// Enable ephemeral caching for this tool definition.
+    ///
+    /// This allows Anthropic to cache the tool definition for cost savings
+    /// when using the same tools across multiple requests.
+    pub fn with_cache_control(mut self) -> Self {
+        self.cache_control = Some(CacheControl::Ephemeral);
+        self
+    }
+
+    /// Alias for `with_cache_control()` - marks this tool for caching
+    pub fn cached(self) -> Self {
+        self.with_cache_control()
+    }
+}
+
+/// Cache control directive for Anthropic prompt caching.
+///
+/// Anthropic's prompt caching allows you to cache portions of your prompt
+/// (system instructions, tools, and conversation history) for reuse across
+/// multiple API calls, reducing costs and latency.
+///
+/// # Example
+/// ```ignore
+/// use rig::providers::anthropic::completion::{Content, CacheControl};
+///
+/// let content = Content::text("Hello").with_cache_control();
+/// ```
+///
+/// See <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CacheControl {
     Ephemeral,
 }
 
-/// System message content block with optional cache control
+/// System message content block with optional cache control.
+///
+/// System content blocks can be cached for cost savings when using
+/// the same system prompt across multiple requests.
+///
+/// # Example
+/// ```ignore
+/// use rig::providers::anthropic::completion::SystemContent;
+///
+/// // Create a cached system prompt
+/// let system = SystemContent::text("You are a helpful assistant.").cached();
+/// ```
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SystemContent {
@@ -150,6 +207,33 @@ pub enum SystemContent {
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+}
+
+impl SystemContent {
+    /// Create a new text system content block
+    pub fn text(text: impl Into<String>) -> Self {
+        SystemContent::Text {
+            text: text.into(),
+            cache_control: None,
+        }
+    }
+
+    /// Enable ephemeral caching for this system content block.
+    ///
+    /// This allows Anthropic to cache the system prompt for cost savings.
+    pub fn with_cache_control(self) -> Self {
+        match self {
+            SystemContent::Text { text, .. } => SystemContent::Text {
+                text,
+                cache_control: Some(CacheControl::Ephemeral),
+            },
+        }
+    }
+
+    /// Alias for `with_cache_control()` - marks this content for caching
+    pub fn cached(self) -> Self {
+        self.with_cache_control()
+    }
 }
 
 impl TryFrom<CompletionResponse> for completion::CompletionResponse<CompletionResponse> {
@@ -243,6 +327,98 @@ impl FromStr for Content {
             text: s.to_owned(),
             cache_control: None,
         })
+    }
+}
+
+impl Content {
+    /// Create a new text content block
+    pub fn text(text: impl Into<String>) -> Self {
+        Content::Text {
+            text: text.into(),
+            cache_control: None,
+        }
+    }
+
+    /// Create a new image content block from a base64-encoded image
+    pub fn image_base64(data: impl Into<String>, media_type: ImageFormat) -> Self {
+        Content::Image {
+            source: ImageSource {
+                data: ImageSourceData::Base64(data.into()),
+                media_type,
+                r#type: SourceType::BASE64,
+            },
+            cache_control: None,
+        }
+    }
+
+    /// Create a new image content block from a URL
+    pub fn image_url(url: impl Into<String>, media_type: ImageFormat) -> Self {
+        Content::Image {
+            source: ImageSource {
+                data: ImageSourceData::Url(url.into()),
+                media_type,
+                r#type: SourceType::URL,
+            },
+            cache_control: None,
+        }
+    }
+
+    /// Create a new document content block
+    pub fn document(data: impl Into<String>, media_type: DocumentFormat) -> Self {
+        Content::Document {
+            source: DocumentSource {
+                data: data.into(),
+                media_type,
+                r#type: SourceType::BASE64,
+            },
+            cache_control: None,
+        }
+    }
+
+    /// Enable ephemeral caching for this content block.
+    ///
+    /// This allows Anthropic to cache the content for cost savings.
+    /// Works on Text, Image, Document, and ToolResult content types.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use rig::providers::anthropic::completion::Content;
+    ///
+    /// let cached_content = Content::text("Important context...").with_cache_control();
+    /// ```
+    pub fn with_cache_control(self) -> Self {
+        match self {
+            Content::Text { text, .. } => Content::Text {
+                text,
+                cache_control: Some(CacheControl::Ephemeral),
+            },
+            Content::Image { source, .. } => Content::Image {
+                source,
+                cache_control: Some(CacheControl::Ephemeral),
+            },
+            Content::Document { source, .. } => Content::Document {
+                source,
+                cache_control: Some(CacheControl::Ephemeral),
+            },
+            Content::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } => Content::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                cache_control: Some(CacheControl::Ephemeral),
+            },
+            // ToolUse and Thinking don't support cache_control
+            other => other,
+        }
+    }
+
+    /// Alias for `with_cache_control()` - marks this content for caching
+    pub fn cached(self) -> Self {
+        self.with_cache_control()
     }
 }
 
@@ -664,6 +840,38 @@ impl TryFrom<Message> for message::Message {
     }
 }
 
+/// Anthropic completion model with support for prompt caching.
+///
+/// # Prompt Caching
+///
+/// Anthropic's prompt caching can significantly reduce costs (up to 90%) and latency
+/// for multi-turn conversations and repeated prompts. Enable it with [`with_prompt_caching()`](Self::with_prompt_caching).
+///
+/// When enabled automatically, cache breakpoints are added to:
+/// - The system prompt
+/// - The last content block of the last message
+///
+/// For finer control, use the builder methods on content types:
+/// - [`Content::with_cache_control()`] / [`Content::cached()`]
+/// - [`SystemContent::with_cache_control()`] / [`SystemContent::cached()`]
+/// - [`ToolDefinition::with_cache_control()`] / [`ToolDefinition::cached()`]
+///
+/// # Example
+///
+/// ```ignore
+/// use rig::providers::anthropic::{Client, CLAUDE_3_5_SONNET};
+///
+/// let client = Client::new("your-api-key");
+/// let model = client.completion_model(CLAUDE_3_5_SONNET)
+///     .with_prompt_caching();  // Enable automatic caching
+///
+/// // The agent will automatically cache system prompt and conversation history
+/// let agent = model.agent()
+///     .preamble("You are a helpful assistant...")
+///     .build();
+/// ```
+///
+/// See <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching> for details.
 #[derive(Clone)]
 pub struct CompletionModel<T = reqwest::Client> {
     pub(crate) client: Client<T>,
@@ -883,6 +1091,7 @@ impl TryFrom<AnthropicRequestParams<'_>> for AnthropicCompletionRequest {
                 name: tool.name,
                 description: Some(tool.description),
                 input_schema: tool.parameters,
+                cache_control: None,
             })
             .collect::<Vec<_>>();
 
@@ -1463,5 +1672,81 @@ mod tests {
                 assert!(cache_control.is_some());
             }
         }
+    }
+
+    #[test]
+    fn test_content_builder_methods() {
+        // Test Content::text() builder
+        let content = Content::text("Hello world");
+        match content {
+            Content::Text { text, cache_control } => {
+                assert_eq!(text, "Hello world");
+                assert!(cache_control.is_none());
+            }
+            _ => panic!("Expected text content"),
+        }
+
+        // Test Content::with_cache_control() / cached()
+        let cached_content = Content::text("Cached text").cached();
+        match cached_content {
+            Content::Text { text, cache_control } => {
+                assert_eq!(text, "Cached text");
+                assert_eq!(cache_control, Some(CacheControl::Ephemeral));
+            }
+            _ => panic!("Expected text content"),
+        }
+
+        // Test image content with cache control
+        let image = Content::image_base64("base64data", ImageFormat::PNG).with_cache_control();
+        match image {
+            Content::Image { cache_control, .. } => {
+                assert_eq!(cache_control, Some(CacheControl::Ephemeral));
+            }
+            _ => panic!("Expected image content"),
+        }
+    }
+
+    #[test]
+    fn test_system_content_builder_methods() {
+        // Test SystemContent::text() builder
+        let system = SystemContent::text("You are helpful");
+        match system {
+            SystemContent::Text { text, cache_control } => {
+                assert_eq!(text, "You are helpful");
+                assert!(cache_control.is_none());
+            }
+        }
+
+        // Test SystemContent::cached()
+        let cached_system = SystemContent::text("Cached system prompt").cached();
+        match cached_system {
+            SystemContent::Text { text, cache_control } => {
+                assert_eq!(text, "Cached system prompt");
+                assert_eq!(cache_control, Some(CacheControl::Ephemeral));
+            }
+        }
+    }
+
+    #[test]
+    fn test_tool_definition_cache_control() {
+        // Test ToolDefinition builder
+        let tool = ToolDefinition::new(
+            "get_weather",
+            "Get current weather",
+            json!({"type": "object", "properties": {"location": {"type": "string"}}}),
+        );
+        assert!(tool.cache_control.is_none());
+
+        // Test ToolDefinition::cached()
+        let cached_tool = ToolDefinition::new(
+            "get_weather",
+            "Get current weather",
+            json!({"type": "object", "properties": {"location": {"type": "string"}}}),
+        ).cached();
+        assert_eq!(cached_tool.cache_control, Some(CacheControl::Ephemeral));
+
+        // Test serialization
+        let json = serde_json::to_string(&cached_tool).unwrap();
+        assert!(json.contains(r#""cache_control":{"type":"ephemeral"}"#));
     }
 }
