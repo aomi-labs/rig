@@ -32,11 +32,41 @@ type StreamingRawChoice = RawStreamingChoice<StreamingCompletionResponse>;
 /// Streaming chunks can come in one of two forms:
 /// - A response chunk (where the completed response will have the total token usage)
 /// - An item chunk commonly referred to as a delta. In the completions API this would be referred to as the message delta.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Serialize, Clone)]
 pub enum StreamingCompletionChunk {
     Response(Box<ResponseChunk>),
     Delta(ItemChunk),
+}
+
+impl<'de> Deserialize<'de> for StreamingCompletionChunk {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let kind = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+
+        if matches!(
+            kind,
+            "response.created"
+                | "response.in_progress"
+                | "response.completed"
+                | "response.failed"
+                | "response.incomplete"
+        ) {
+            return serde_json::from_value(value)
+                .map(Box::new)
+                .map(Self::Response)
+                .map_err(serde::de::Error::custom);
+        }
+
+        serde_json::from_value(value)
+            .map(Self::Delta)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// The final streaming response from the OpenAI Responses API.
@@ -1586,6 +1616,16 @@ mod tests {
         assert!(matches!(
             classify_responses_frame(&frame),
             WireEvent::Known(StreamingCompletionChunk::Delta(_))
+        ));
+    }
+
+    #[test]
+    fn response_envelope_with_gateway_fields_decodes_as_response_chunk() {
+        let frame = r#"{"type":"response.completed","response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","background":false,"completed_at":1,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"gpt-test","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"default","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"input_tokens":13,"input_tokens_details":{"cached_tokens":0},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":20},"user":null,"metadata":{}},"sequence_number":10}"#;
+
+        assert!(matches!(
+            serde_json::from_str::<StreamingCompletionChunk>(frame),
+            Ok(StreamingCompletionChunk::Response(_))
         ));
     }
 
