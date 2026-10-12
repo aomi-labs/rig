@@ -727,6 +727,11 @@ fn user_part(part: UserContent, id: Option<&str>) -> Result<Value, EncodeError> 
             }
             part
         }
+        UserContent::ToolLoad(_) => {
+            return Err(EncodeError::request(
+                "Gemini does not load tools mid-conversation",
+            ));
+        }
     })
 }
 

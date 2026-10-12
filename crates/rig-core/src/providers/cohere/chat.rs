@@ -360,6 +360,7 @@ fn user_part(part: &UserContent) -> Result<Value, EncodeError> {
         UserContent::Audio(_) => return Err(unsendable("audio")),
         UserContent::Video(_) => return Err(unsendable("a video")),
         UserContent::ToolResult(_) => return Err(unsendable("a tool result as a content part")),
+        UserContent::ToolLoad(_) => return Err(unsendable("a tool load")),
     })
 }
 

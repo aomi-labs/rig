@@ -256,6 +256,7 @@ impl UserParts {
             UserContent::Audio(_) => return Err(unsendable("audio")),
             UserContent::Video(_) => return Err(unsendable("video")),
             UserContent::ToolResult(_) => return Err(unsendable("a tool result as user content")),
+            UserContent::ToolLoad(_) => return Err(unsendable("a tool load")),
         }
         Ok(())
     }

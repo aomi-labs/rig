@@ -231,12 +231,20 @@ fn base(
     let strict = wire.strict_tools && wire.provider.dialect.quirks.strict_tool_schemas;
     let eager = wire.tool_input_streaming == super::wire::ToolInputStreaming::Eager;
     let mut tools = tools(request.tools.clone(), input.raw_tools()?, strict, eager);
+    // Offered but not loaded: a `tool_addition` in the history loads them.
+    for mut tool in self::tools(request.deferred_tools.clone(), Vec::new(), strict, eager) {
+        if let Some(tool) = tool.as_object_mut() {
+            tool.insert("defer_loading".into(), Value::Bool(true));
+        }
+        tools.push(tool);
+    }
     let (mut system, history) =
         split_system(&request.chat_history, takes_mid_conversation_system(model));
     let ids = WireIds::for_target(&history, wire, model);
     let mut messages: Vec<Value> = Vec::new();
     for message in &history {
         messages.extend(message_json(message, wire, &ids)?);
+        messages.extend(tool_additions(message));
     }
     // MiniMax honours a cache through block markers the manual placement
     // writes.
@@ -319,6 +327,34 @@ fn message_json(
     Ok((!content.is_empty()).then(|| json!({ "role": role, "content": content })))
 }
 
+/// The `tool_addition` system message for the tool loads in `message`.
+fn tool_additions(message: &Message) -> Option<Value> {
+    let Message::User { content } = message else {
+        return None;
+    };
+    let additions: Vec<Value> = content
+        .iter()
+        .filter_map(|part| match part {
+            UserContent::ToolLoad(load) => Some(&load.tools),
+            _ => None,
+        })
+        .flatten()
+        .map(|name| json!({"type": "tool_addition", "tool": {"type": "tool_reference", "name": name}}))
+        .collect();
+    (!additions.is_empty()).then(|| json!({ "role": "system", "content": additions }))
+}
+
+/// Whether `history` loads tools, which needs [`MID_CONVERSATION_TOOLS_BETA`].
+pub(super) fn loads_tools(history: &[Message]) -> bool {
+    history.iter().any(|message| {
+        matches!(message, Message::User { content }
+            if content.iter().any(|part| matches!(part, UserContent::ToolLoad(_))))
+    })
+}
+
+/// The beta flag that lets a request load deferred tools mid-conversation.
+pub(super) const MID_CONVERSATION_TOOLS_BETA: &str = "mid-conversation-tool-changes-2026-07-01";
+
 /// One user block on the wire. `None` for blank text, which Anthropic
 /// rejects (pi's rule).
 fn user_part(part: &UserContent, ids: &WireIds) -> Result<Option<Value>, EncodeError> {
@@ -348,6 +384,8 @@ fn user_part(part: &UserContent, ids: &WireIds) -> Result<Option<Value>, EncodeE
         UserContent::Image(part) => image(part)?,
         UserContent::Document(document) => document_part(document)?,
         UserContent::Audio(_) | UserContent::Video(_) => return Err(unsendable()),
+        // Sent as a `tool_addition` system message after the user message.
+        UserContent::ToolLoad(_) => return Ok(None),
     }))
 }
 

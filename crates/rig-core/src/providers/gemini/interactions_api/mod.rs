@@ -583,6 +583,9 @@ fn user_content(part: UserContent) -> Result<Value, EncodeError> {
         UserContent::ToolResult(_) => {
             Err(EncodeError::request("a tool result is a step of its own"))
         }
+        UserContent::ToolLoad(_) => Err(EncodeError::request(
+            "Interactions does not load tools mid-conversation",
+        )),
     }
 }
 

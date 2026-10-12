@@ -14,6 +14,7 @@ fn bare(chat_history: Vec<Message>) -> CompletionRequest {
         chat_history,
         documents: Vec::new(),
         tools: Vec::new(),
+        deferred_tools: Vec::new(),
         temperature: None,
         max_tokens: None,
         tool_choice: None,

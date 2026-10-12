@@ -119,6 +119,8 @@ struct Custom {
     tools: std::collections::HashSet<String>,
     /// Whether each call id the request sends is a custom call.
     calls: std::collections::HashMap<String, bool>,
+    /// The deferred tools, as their definitions go on the wire.
+    deferred: std::collections::HashMap<String, Value>,
 }
 
 /// The input items of `history` for `target`, which addresses `model`. A
@@ -167,6 +169,33 @@ fn input(
                                     json!({"type": "function_call_output", "call_id": call_id, "output": output, "status": "completed"})
                                 },
                             );
+                            continue;
+                        }
+                        // A host-run tool search that found the loaded tools.
+                        UserContent::ToolLoad(load) => {
+                            let names = load
+                                .tools
+                                .iter()
+                                .map(message::ToolName::as_str)
+                                .collect::<Vec<_>>();
+                            let tools = names
+                                .iter()
+                                .filter_map(|name| custom.deferred.get(*name).cloned())
+                                .collect::<Vec<_>>();
+                            items.push(json!({
+                                "type": "tool_search_call",
+                                "execution": "client",
+                                "call_id": load.id,
+                                "status": "completed",
+                                "arguments": {"goal": names.join(", ")},
+                            }));
+                            items.push(json!({
+                                "type": "tool_search_output",
+                                "execution": "client",
+                                "call_id": load.id,
+                                "status": "completed",
+                                "tools": tools,
+                            }));
                             continue;
                         }
                         UserContent::Image(image) => {
@@ -422,11 +451,30 @@ impl wire::Responses {
             );
         }
         tools.extend(self.tools.iter().cloned());
+        let offered = tools.len();
+        tools.extend(
+            request
+                .deferred_tools
+                .iter()
+                .cloned()
+                .map(ResponsesToolDefinition::from),
+        );
         if self.strict_tools {
             tools = tools
                 .into_iter()
                 .map(ResponsesToolDefinition::with_strict)
                 .collect();
+        }
+        let mut deferred = std::collections::HashMap::new();
+        for tool in tools.iter_mut().skip(offered) {
+            tool.config
+                .insert("defer_loading".into(), Value::Bool(true));
+            let definition = serde_json::to_value(&*tool)
+                .map_err(|err| EncodeError::request(format!("deferred tool: {err}")))?;
+            deferred.insert(tool.name.clone(), definition);
+        }
+        if !deferred.is_empty() {
+            tools.push(tool_search());
         }
         let mut custom = Custom {
             tools: tools
@@ -435,6 +483,7 @@ impl wire::Responses {
                 .map(|tool| tool.name.clone())
                 .collect(),
             calls: Default::default(),
+            deferred,
         };
         let stateless = codex || layers.param("store") == Some(&json!(false));
         let mut items = input(&request.chat_history, self, &model, &mut custom, stateless)?;
@@ -527,6 +576,22 @@ impl wire::Responses {
             .filter_map(|(key, value)| Some((key.to_owned(), value?)))
             .collect())
     }
+}
+
+/// The client-run tool search a request with deferred tools declares. The
+/// host answers it: a [`ToolLoad`](crate::message::ToolLoad) is a search it
+/// ran.
+fn tool_search() -> ResponsesToolDefinition {
+    let mut tool = ResponsesToolDefinition::hosted("tool_search");
+    tool.description = "Load deferred tools the request needs.".into();
+    tool.parameters = json!({
+        "type": "object",
+        "properties": {"goal": {"type": "string"}},
+        "required": ["goal"],
+        "additionalProperties": false,
+    });
+    tool.config.insert("execution".into(), json!("client"));
+    tool
 }
 
 /// A function or hosted tool available to a Responses request.

@@ -845,6 +845,13 @@ pub struct CompletionRequest {
     pub documents: Vec<Document>,
     /// The tools to be sent to the completion model provider
     pub tools: Vec<ToolDefinition>,
+    /// Tools offered without loading them. A wire that loads tools
+    /// mid-conversation sends these marked deferred, and a
+    /// [`ToolLoad`](crate::message::ToolLoad) in the history makes them
+    /// callable. Other wires do not send them: put a tool in [`Self::tools`]
+    /// for those.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_tools: Vec<ToolDefinition>,
     /// The temperature to be sent to the completion model provider
     pub temperature: Option<f64>,
     /// The max tokens to be sent to the completion model provider
@@ -1076,6 +1083,7 @@ impl CompletionRequest {
             chat_history,
             documents: Vec::new(),
             tools: Vec::new(),
+            deferred_tools: Vec::new(),
             temperature: None,
             max_tokens: None,
             tool_choice: None,
@@ -1140,6 +1148,12 @@ impl CompletionRequest {
         let first = self.tools.is_empty();
         self.tools.extend(tools);
         self.warn_if_shadowed("tools", first && !self.tools.is_empty());
+        self
+    }
+
+    /// Offer `tools` deferred, in order (see [`Self::deferred_tools`]).
+    pub fn deferred_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
+        self.deferred_tools.extend(tools);
         self
     }
 

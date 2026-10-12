@@ -487,6 +487,8 @@ impl Wire for Messages {
             super::completion::drops_unbound_thinking(self, &model, body.get("thinking"))
                 .then_some(super::completion::THINKING_BINDING_BETA),
             fine_grained.then_some(super::completion::FINE_GRAINED_TOOL_STREAMING_BETA),
+            super::completion::loads_tools(&request.chat_history)
+                .then_some(super::completion::MID_CONVERSATION_TOOLS_BETA),
         ]
         .into_iter()
         .flatten()
@@ -521,6 +523,10 @@ impl Wire for Messages {
 }
 
 impl crate::completion::ReplayTarget for Messages {
+    fn loads_tools(&self) -> bool {
+        true
+    }
+
     /// Section 6.1 of the typed-options design, by dialect and model class.
     fn map_options(
         &self,

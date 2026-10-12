@@ -201,6 +201,14 @@ pub trait ReplayTarget: std::fmt::Debug + WasmCompatSync {
         true
     }
 
+    /// Whether the wire loads [`deferred tools`](crate::completion::CompletionRequest::deferred_tools)
+    /// mid-conversation. [`adapt`] drops every
+    /// [`ToolLoad`](crate::message::ToolLoad) for a wire that does not, so
+    /// its encoder never sees one. By default none does.
+    fn loads_tools(&self) -> bool {
+        false
+    }
+
     /// The id `id` takes when a call another model made is sent to `model`
     /// on this wire. `source` is the call's origin, `None` for a hand-built
     /// turn. Results answering the call are rewritten to match, and an id
@@ -498,7 +506,11 @@ pub(crate) fn context_of(
     target: &dyn ReplayTarget,
     model: &str,
 ) -> crate::message::Fingerprint {
-    let mut tools: Vec<_> = request.tools.iter().collect();
+    let mut tools: Vec<_> = request
+        .tools
+        .iter()
+        .chain(&request.deferred_tools)
+        .collect();
     tools.sort_by(|left, right| left.name.cmp(&right.name));
     let raw = raw_tools(request);
     let folds = target.later_system(model) == LaterSystem::Leading;
@@ -1207,6 +1219,12 @@ fn user(content: &[UserContent], ids: &mut Renamed, form: &Form<'_>) -> Vec<Mess
                 shaped.push(UserContent::ToolResult(result));
                 continue;
             }
+            UserContent::ToolLoad(load) => {
+                if form.target.loads_tools() {
+                    shaped.push(UserContent::ToolLoad(load.clone()));
+                }
+                continue;
+            }
             // Blank text says nothing, and several providers reject it.
             UserContent::Text(text) if text.text.trim().is_empty() => continue,
             UserContent::Text(_) => {
@@ -1496,7 +1514,8 @@ fn answer_calls(history: Vec<Option<Message>>, stored: bool, answers: bool) -> V
                     | UserContent::Image(_)
                     | UserContent::Audio(_)
                     | UserContent::Video(_)
-                    | UserContent::Document(_) => true,
+                    | UserContent::Document(_)
+                    | UserContent::ToolLoad(_) => true,
                 });
                 if content.is_empty() && waiting.is_empty() {
                     // Only results nothing waits for: the gap stays open.

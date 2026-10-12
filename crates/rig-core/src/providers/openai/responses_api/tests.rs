@@ -58,6 +58,7 @@ fn input_items(message: completion::Message) -> Result<Vec<Value>, EncodeError> 
     let mut custom = Custom {
         tools: Default::default(),
         calls: Default::default(),
+        deferred: Default::default(),
     };
     super::input(&[message], &wire, "gpt-5", &mut custom, false)
 }
@@ -761,4 +762,61 @@ fn a_stored_continuation_keeps_the_results_of_the_stored_calls() {
     let error = crate::operation::Completion::prepare(request, &wire.describe())
         .and_then(|prepared| json_of(&wire, prepared).map_err(Into::into));
     assert!(error.is_err(), "{error:?}");
+}
+
+/// A request offering `forecast` deferred, with a load of it in history.
+fn loading_request() -> completion::CompletionRequest {
+    let forecast = completion::ToolDefinition::new(
+        message::ToolName::new("forecast").unwrap(),
+        "5-day forecast",
+        json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}),
+    );
+    completion::CompletionRequest::new("And the 5-day forecast?")
+        .messages([completion::Message::User {
+            content: vec![message::UserContent::ToolLoad(message::ToolLoad {
+                id: "load_1".into(),
+                tools: vec![message::ToolName::new("forecast").unwrap()],
+            })],
+        }])
+        .deferred_tools(vec![forecast])
+}
+
+#[test]
+fn deferred_tools_load_through_a_host_run_tool_search() {
+    let body = prepared("gpt-5", loading_request());
+    let tools = body["tools"].as_array().unwrap();
+    let forecast = tools
+        .iter()
+        .find(|tool| tool["name"] == "forecast")
+        .unwrap();
+    assert_eq!(forecast["defer_loading"], json!(true));
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["type"] == "tool_search" && tool["execution"] == "client")
+    );
+
+    let input = body["input"].as_array().unwrap();
+    let call = input
+        .iter()
+        .position(|item| item["type"] == "tool_search_call")
+        .unwrap();
+    assert_eq!(input[call]["call_id"], "load_1");
+    assert_eq!(input[call + 1]["type"], "tool_search_output");
+    assert_eq!(input[call + 1]["call_id"], "load_1");
+    assert_eq!(
+        &input[call + 1]["tools"][0],
+        forecast,
+        "the output carries the declared definition"
+    );
+}
+
+#[test]
+fn a_request_without_deferred_tools_declares_no_tool_search() {
+    let body = prepared("gpt-5", completion::CompletionRequest::new("hi"));
+    assert!(body.get("tools").is_none_or(|tools| {
+        tools
+            .as_array()
+            .is_some_and(|tools| tools.iter().all(|tool| tool["type"] != "tool_search"))
+    }));
 }

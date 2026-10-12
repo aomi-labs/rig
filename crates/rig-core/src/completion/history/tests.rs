@@ -888,3 +888,26 @@ fn a_call_renamed_for_a_reused_id_keeps_its_item_where_the_item_holds_its_id() {
         "without a slot the item would name the old id"
     );
 }
+
+#[test]
+fn a_wire_that_does_not_load_tools_drops_the_load() {
+    let load = UserContent::ToolLoad(crate::message::ToolLoad {
+        id: "load_1".into(),
+        tools: vec![crate::message::ToolName::new("forecast").unwrap()],
+    });
+    let history = vec![
+        Message::user("hi"),
+        Message::User {
+            content: vec![load.clone()],
+        },
+        Message::User {
+            content: vec![load, UserContent::text("skill")],
+        },
+    ];
+    assert_eq!(
+        adapt(&history, &TARGET),
+        vec![Message::User {
+            content: vec![UserContent::text("hi"), UserContent::text("skill")]
+        }]
+    );
+}

@@ -2091,3 +2091,64 @@ fn an_invalid_raw_top_level_cache_marker_is_refused() {
         );
     }
 }
+
+#[test]
+fn deferred_tools_load_through_a_tool_addition() {
+    let forecast = completion::ToolDefinition::new(
+        message::ToolName::new("forecast").unwrap(),
+        "5-day forecast",
+        json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+    );
+    let request = CompletionRequest::new("And the 5-day forecast?")
+        .messages([message::Message::User {
+            content: vec![
+                message::UserContent::text("loading"),
+                message::UserContent::ToolLoad(message::ToolLoad {
+                    id: "load_1".into(),
+                    tools: vec![message::ToolName::new("forecast").unwrap()],
+                }),
+            ],
+        }])
+        .deferred_tools(vec![forecast]);
+    let body = request_body(Params {
+        model: CLAUDE_SONNET_4_6,
+        request,
+        prompt_caching: false,
+        cache: None,
+        static_prefix_cache_ttl: None,
+    })
+    .unwrap();
+    let tool = &body["tools"][0];
+    assert_eq!(
+        (tool["name"].as_str(), &tool["defer_loading"]),
+        (Some("forecast"), &json!(true))
+    );
+    let messages = body["messages"].as_array().unwrap();
+    let load = messages
+        .iter()
+        .position(|message| message["role"] == "system")
+        .unwrap();
+    assert_eq!(messages[load - 1]["content"][0]["text"], "loading");
+    assert_eq!(
+        messages[load]["content"],
+        json!([{"type": "tool_addition", "tool": {"type": "tool_reference", "name": "forecast"}}])
+    );
+}
+
+#[test]
+fn a_tool_load_asks_for_the_mid_conversation_tools_beta() {
+    use crate::wire::{Operation, Wire};
+    let wire = AnthropicConfig::new("test-key").completion(CLAUDE_SONNET_4_6);
+    let request = CompletionRequest::new("go").messages([message::Message::User {
+        content: vec![message::UserContent::ToolLoad(message::ToolLoad {
+            id: "load_1".into(),
+            tools: vec![message::ToolName::new("forecast").unwrap()],
+        })],
+    }]);
+    let request = crate::operation::Completion::prepare(request, &wire.describe()).unwrap();
+    let encoded = wire.encode(request, Mode::Unary).unwrap();
+    let betas = encoded.request.headers()["anthropic-beta"]
+        .to_str()
+        .unwrap();
+    assert!(betas.contains(MID_CONVERSATION_TOOLS_BETA), "{betas}");
+}

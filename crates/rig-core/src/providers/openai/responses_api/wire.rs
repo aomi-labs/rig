@@ -176,6 +176,10 @@ impl Wire for Responses {
 }
 
 impl crate::completion::ReplayTarget for Responses {
+    fn loads_tools(&self) -> bool {
+        true
+    }
+
     /// Section 6.3 of the typed-options design, by dialect.
     fn map_options(
         &self,

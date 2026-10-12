@@ -625,6 +625,7 @@ fn user_parts(content: &[UserContent]) -> Vec<TelemetryPart> {
             UserContent::Document(document) => {
                 media_part(&document.data, document.media_type.as_ref(), "document")
             }
+            UserContent::ToolLoad(_) => None,
         })
         .collect()
 }

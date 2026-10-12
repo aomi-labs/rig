@@ -116,6 +116,7 @@ fn user_part(part: &UserContent) -> Result<Value, EncodeError> {
             json!({"type": "video_url", "video_url": {"url": url}})
         }
         UserContent::ToolResult(_) => return Err(unsendable("a tool result as a content part")),
+        UserContent::ToolLoad(_) => return Err(unsendable("a tool load")),
     })
 }
 

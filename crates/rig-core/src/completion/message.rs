@@ -177,6 +177,23 @@ pub enum UserContent {
     Video(Video),
     /// Document content.
     Document(Document),
+    /// The host loads deferred tools from here on. Only wires that load
+    /// tools mid-conversation send it; the others leave it out.
+    ToolLoad(ToolLoad),
+}
+
+/// Deferred tools ([`CompletionRequest::deferred_tools`](super::CompletionRequest::deferred_tools))
+/// the model may call from this point of the conversation.
+///
+/// Loading appends to history instead of editing the request's tool list,
+/// so the cached prefix of earlier requests stays valid.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ToolLoad {
+    /// Stable id of this load, sent as the wire's call id where one is
+    /// needed. Keep it fixed so a replayed load spells the same bytes.
+    pub id: String,
+    /// The tools loaded.
+    pub tools: Vec<ToolName>,
 }
 
 /// One block of an assistant turn: one provider output item.
