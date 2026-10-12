@@ -214,7 +214,7 @@ version = "0.44.0"
 edition = "2024"
 # The toolchain in rust-toolchain.toml, the only one CI builds with. Bevy 0.19,
 # rig-ecs's floor, declares the same minimum.
-rust-version = "1.95.0"
+rust-version = "1.93.0"
 
 [workspace.dependencies]
 # Every requirement below is a FLOOR, not a pin: `tokio = "1"` means `^1`,
